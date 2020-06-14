@@ -122,7 +122,7 @@ foldForward = RQ.foldForward
 -- @
 -- newtype Foo = Foo Int
 --
--- instance QueryRunnerColumnDefault Foo Foo where
+-- instance DefaultFromField Foo Foo where
 --    defaultFromField = unsafeFromField Foo defaultFromField
 -- @
 --
