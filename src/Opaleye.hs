@@ -34,6 +34,7 @@ module Opaleye ( module Opaleye.Aggregate
                , module Opaleye.Select
                , module Opaleye.SqlTypes
                , module Opaleye.Table
+               , module Opaleye.ToFields
                , module Opaleye.Values
                , module Opaleye.Unpackspec
                ) where
@@ -42,6 +43,7 @@ import Opaleye.Aggregate
 import Opaleye.Binary
 import Opaleye.Column
 import Opaleye.Constant
+  hiding (toToField)
 import Opaleye.Distinct
 import Opaleye.Field
   hiding (null,
@@ -70,5 +72,6 @@ import Opaleye.Select
 import Opaleye.Sql
 import Opaleye.SqlTypes
 import Opaleye.Table
+import Opaleye.ToFields
 import Opaleye.Values
 import Opaleye.Unpackspec
