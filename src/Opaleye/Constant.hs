@@ -47,7 +47,7 @@ instance D.Default ToFields haskell (Column sql)
   def = ToFields (C.maybeToNullable . fmap f)
     where ToFields f = D.def
 
-toToField :: (haskells -> fields) -> Constant haskells fields
+toToField :: (haskells -> fields) -> ToFields haskells fields
 toToField = ToFields
 
 instance D.Default ToFields String (Column T.SqlText) where
