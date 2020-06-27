@@ -3,6 +3,7 @@
 
 module Opaleye.Internal.Lateral
   ( lateral
+  , lateralDup
   , viaLateral
   , laterally
   , bilaterally
@@ -28,11 +29,14 @@ import           Control.Category ( (<<<) )
 -- 'Opaleye.Aggregate.aggregate' and 'Opaleye.Binary.union' to 'Select's
 -- rather than 'SelectArr's.
 lateral :: (i -> Select a) -> SelectArr i a
-lateral f = Q.QueryArr qa
+lateral f = lateralDup (\i -> f i <<< pure ())
+
+lateralDup :: (i -> SelectArr i a) -> SelectArr i a
+lateralDup f = Q.QueryArr qa
   where
     qa (i, primQueryL, tag) = (a, primQueryJoin, tag')
       where
-        (a, primQueryR, tag') = Q.runSimpleQueryArr (f i) ((), tag)
+        (a, primQueryR, tag') = Q.runSimpleQueryArr (f i) (i, tag)
         primQueryJoin = PQ.Product ((PQ.NonLateral, primQueryL)
                                     :| [(PQ.Lateral, primQueryR)])
                                    []
