@@ -1,3 +1,7 @@
+{-# OPTIONS_GHC -Wall #-}
+
+{-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE GADTSyntax #-}
 {-# LANGUAGE Arrows #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -21,6 +25,7 @@ import           Control.Applicative (Applicative, pure, (<$>), (<*>), liftA2)
 import qualified Data.Profunctor.Product.Default as D
 import           Data.List (sort)
 import qualified Data.List as List
+import qualified Data.List.NonEmpty as NEL
 import qualified Data.MultiSet as MultiSet
 import qualified Data.Profunctor as P
 import qualified Data.Profunctor.Product as PP
@@ -612,6 +617,22 @@ traverseMaybeFields conn (ArbitrarySelectMaybeFields q) =
 
 run :: PGS.Connection -> IO ()
 run conn = do
+  let l = [ [ 1, 2, 3 ]
+          , [ 4, 5, 6 ]
+          , [ 7, 8, 9 ]
+          , [ 10, 11, 12 ]
+          ] :: [[O.Field O.PGInt4]]
+
+  flip mapM_ (baz l) $ \s -> do
+    r <- O.runSelectExplicit (PP.list D.def) conn s
+
+    let _ = r :: [[Int]]
+
+    print r
+
+  error "Done"
+
+
   let prop1 p = fmap          TQ.ioProperty (p conn)
       prop2 p = (fmap . fmap) TQ.ioProperty (p conn)
       prop3 p = (fmap . fmap . fmap) TQ.ioProperty (p conn)
@@ -728,3 +749,67 @@ minimumBy :: (a -> a -> Ord.Ordering) -> [a] -> Maybe a
 minimumBy = maximumBy . flip
 
 -- }
+
+data W a p p' c where
+  W :: p r [c] -> p' r [c] -> NEL.NonEmpty (a, r) -> W a p p' c
+
+baz :: O.IsSqlType a
+    => [[O.Field a]] -> Maybe (O.Select [O.Field a])
+baz = bar O.valuesSafeExplicit D.def D.def
+
+bar :: (PP.ProductProfunctor p, PP.ProductProfunctor p')
+    => (forall r. p r [c] -> p' r [c] -> [r] -> select [c])
+    -> p  b c
+    -> p' b c
+    -> [[b]]
+    -> Maybe (select [c])
+bar valuesSafeExplicit p1 p2 bs' = case NEL.nonEmpty bs' of
+  Nothing -> Just (valuesSafeExplicit (P.rmap pure p1) (P.rmap pure p2) [])
+  Just bs -> case foo p1 p2 (fmap (\x -> ((), x)) bs) of
+    Nothing -> Nothing
+    Just (W p1' p2' ar) ->
+      Just (valuesSafeExplicit p1' p2' (NEL.toList (fmap snd ar)))
+
+foo :: (PP.ProductProfunctor p, PP.ProductProfunctor p')
+    => p b c
+    -> p' b c
+    -> NEL.NonEmpty (a, [b])
+    -> Maybe (W a p p' c)
+foo = wrap where
+
+  wrap :: (PP.ProductProfunctor p, PP.ProductProfunctor p')
+       => p b c
+       -> p' b c
+       -> NEL.NonEmpty (a, [b])
+       -> Maybe (W a p p' c)
+  wrap p p1 l = do
+    u <- unconses l
+
+    case u of
+      Left as -> return (W (PP.purePP []) (PP.purePP [])
+                           (fmap (\x -> (x, ())) as))
+      Right abbs -> do
+        w <- wrap p p1 abbs
+
+        return $ case w of
+          W p' p1' n -> W ((:) PP.***$ P.lmap fst p PP.**** P.lmap snd p')
+                          ((:) PP.***$ P.lmap fst p1 PP.**** P.lmap snd p1')
+                          (fmap (\((a_, b_), r_) -> (a_, (b_, r_))) n)
+
+  unconses :: NEL.NonEmpty (a, [b])
+           -> Maybe (Either (NEL.NonEmpty a) (NEL.NonEmpty ((a, b), [b])))
+  unconses l = case uncons l of
+    Left (a, bs) -> case bs of
+      []     -> Just (Left (pure a))
+      b':bs' -> Just (Right (pure ((a, b'), bs')))
+    Right ((a, bs), a_bss) -> case unconses a_bss of
+      Nothing  -> Nothing
+      Just eas_abbs -> case (bs, eas_abbs) of
+        ([], Left as) -> Just (Left (a NEL.<| as))
+        (b:bs', Right abbs) -> Just (Right (((a, b), bs') NEL.<| abbs))
+        _ -> Nothing
+
+  uncons :: NEL.NonEmpty a -> Either a (a, NEL.NonEmpty a)
+  uncons (a NEL.:| as) = case as of
+    []     -> Left a
+    a':as' -> Right (a, a' NEL.:| as')
