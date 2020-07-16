@@ -7,7 +7,7 @@ module Opaleye.Internal.MaybeFields where
 
 import           Control.Applicative hiding (optional)
 import           Control.Arrow (returnA, (<<<))
-import           Data.Functor.Identity (Identity, runIdentity)
+import           Data.Functor.Identity (runIdentity)
 
 import qualified Opaleye.Internal.Column as IC
 import qualified Opaleye.Internal.PackMap as PM
