@@ -687,7 +687,7 @@ instance (PP.ProductProfunctor p, PP.ProductProfunctor p')
               (fmap (\((a, r), r') -> (a, (r, r'))) gl))
 
 instance (P.Profunctor p, P.Profunctor p') => PP.SumProfunctor (U p p') where
-  U f +++! U g = U (\l -> do
+  f +++! g = U (\l -> do
     let eithers :: NEL.NonEmpty (a, Either b b')
                 -> Maybe (Either (NEL.NonEmpty (a, b))
                                  (NEL.NonEmpty (a, b')))
@@ -705,8 +705,8 @@ instance (P.Profunctor p, P.Profunctor p') => PP.SumProfunctor (U p p') where
     e_abs_ab's <- eithers l
 
     case e_abs_ab's of
-      Left abs_  -> (fmap . fmap) Left  (f abs_)
-      Right ab's -> (fmap . fmap) Right (g ab's)
+      Left abs_  -> case f of U f' -> (fmap . fmap) Left  (f' abs_)
+      Right ab's -> case g of U g' -> (fmap . fmap) Right (g' ab's)
     )
 
 
