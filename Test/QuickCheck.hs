@@ -617,16 +617,17 @@ traverseMaybeFields conn (ArbitrarySelectMaybeFields q) =
 
 run :: PGS.Connection -> IO ()
 run conn = do
-  let l = [ [ 1, 2, 3 ]
-          , [ 4, 5, 6 ]
-          , [ 7, 8, 9 ]
-          , [ 10, 11, 12 ]
-          ] :: [[O.Field O.PGInt4]]
+  let l = map fieldsOfHaskells
+           [ [ CInt 1,  CBool True,  CString "Helol" ]
+           , [ CInt 4,  CBool True,  CString "There" ]
+           , [ CInt 7,  CBool False, CString "Wrold" ]
+           , [ CInt 10, CBool True,  CString "blah"  ]
+           ] :: [Fields]
 
-  flip mapM_ (baz l) $ \s -> do
-    r <- O.runSelectExplicit (PP.list D.def) conn s
+  flip mapM_ (quux l) $ \s -> do
+    r <- O.runSelectExplicit defChoicesPP conn s
 
-    let _ = r :: [[Int]]
+    let _ = r :: [Haskells]
 
     print r
 
@@ -770,6 +771,7 @@ instance (PP.ProductProfunctor p, PP.ProductProfunctor p')
   => PP.ProductProfunctor (U p p') where
   purePP a = U (\l -> pure (W (PP.purePP a) (PP.purePP a) l))
 
+  -- Probably ought to be more lazy here too
   U f **** U g = U (\l -> do
     let l' = fmap (\(a, b) -> ((a, b), b)) l
     wf <- f l'
@@ -811,15 +813,17 @@ instance (P.Profunctor p, P.Profunctor p') => PP.SumProfunctor (U p p') where
 
 quux :: [Fields] -> Maybe (O.Select Fields)
 quux bs' = case NEL.nonEmpty bs' of
-  Nothing -> error "Was empty"
-    -- Just (O.valuesSafeExplicit (P.rmap pure p1) (P.rmap pure p2) [])
-  Just bs -> case PP.list (choicePP (pureU D.def D.def)
-                                    (pureU D.def D.def)
-                                    (pureU D.def D.def)) of
+  Nothing -> Just (O.valuesSafeExplicit (pure []) (pure []) [])
+  Just bs -> case PP.list up of
     U g -> case g (fmap (\x -> ((), x)) bs) of
       Nothing -> Nothing
       Just (W p1' p2' ar) ->
         Just (O.valuesSafeExplicit p1' p2' (NEL.toList (fmap snd ar)))
+
+  where up = choicePP (pureU D.def D.def)
+                      (pureU D.def D.def)
+                      (pureU D.def D.def)
+
 
 baz :: O.IsSqlType a
     => [[O.Field a]] -> Maybe (O.Select [O.Field a])
