@@ -86,7 +86,7 @@ fromMaybeFieldsExplicit ifpp = flip (maybeFieldsExplicit ifpp) id
 nothingExplicit :: V.ValuesspecSafe a a -> MaybeFields a
 nothingExplicit v = MaybeFields {
     mfPresent = Opaleye.SqlTypes.sqlBool False
-  , mfFields  = runIdentity (V.runValuesspecSafe v pure)
+  , mfFields  = runIdentity (fst (V.runValuesspecSafe v pure))
   }
 
 traverseMaybeFields :: SelectArr a b -> SelectArr (MaybeFields a) (MaybeFields b)
