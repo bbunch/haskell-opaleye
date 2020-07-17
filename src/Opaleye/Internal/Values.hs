@@ -9,6 +9,7 @@ import qualified Opaleye.Internal.PrimQuery as PQ
 import qualified Opaleye.Internal.PackMap as PM
 import qualified Opaleye.Internal.HaskellDB.PrimQuery as HPQ
 import qualified Opaleye.Internal.PGTypes
+import qualified Opaleye.SqlTypes
 
 import           Data.Profunctor (Profunctor, dimap, rmap)
 import           Data.Profunctor.Product (ProductProfunctor)
@@ -64,26 +65,31 @@ runValuesspec (Valuesspec v) f = PM.traversePM v f ()
 instance Default Valuesspec (Column a) (Column a) where
   def = Valuesspec (PM.iso id Column)
 
--- FIXME: We don't currently handle the case of zero columns.  Need to
--- emit a dummy column and data.
 valuesUSafe :: U.Unpackspec columns columns'
             -> ValuesspecSafe columns columns'
             -> [columns]
             -> ((), T.Tag) -> (columns', PQ.PrimQuery, T.Tag)
 valuesUSafe unpack valuesspec rows ((), t) = (newColumns, primQ', T.next t)
-  where runRow row = valuesRow
-           where (_, valuesRow) =
-                   PM.run (U.runUnpackspec unpack extractValuesEntry row)
+  where runRow row =
+          case PM.run (U.runUnpackspec unpack extractValuesEntry row) of
+            (_, []) -> [zero]
+            (_, xs) -> xs
 
         (newColumns, valuesPEs_nulls) =
           PM.run (runValuesspecSafe valuesspec (extractValuesField t))
 
         valuesPEs = map fst valuesPEs_nulls
-        nulls = map snd valuesPEs_nulls
+        nulls = case map snd valuesPEs_nulls of
+          []     -> [nullInt]
+          nulls' -> nulls'
 
         yieldNoRows :: PQ.PrimQuery -> PQ.PrimQuery
         yieldNoRows = PQ.restrict (HPQ.ConstExpr (HPQ.BoolLit False))
 
+        zero = HPQ.ConstExpr (HPQ.IntegerLit 0)
+        nullInt = HPQ.CastExpr (Opaleye.Internal.PGTypes.showSqlType
+                                  (Nothing :: Maybe Opaleye.SqlTypes.SqlInt4))
+                               (HPQ.ConstExpr HPQ.NullLit)
 
         (values, wrap) = if null rows
                          then ([nulls], yieldNoRows)
