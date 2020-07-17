@@ -809,6 +809,17 @@ instance (P.Profunctor p, P.Profunctor p') => PP.SumProfunctor (U p p') where
 
 
 
+quux :: [Fields] -> Maybe (O.Select Fields)
+quux bs' = case NEL.nonEmpty bs' of
+  Nothing -> error "Was empty"
+    -- Just (O.valuesSafeExplicit (P.rmap pure p1) (P.rmap pure p2) [])
+  Just bs -> case PP.list (choicePP (pureU D.def D.def)
+                                    (pureU D.def D.def)
+                                    (pureU D.def D.def)) of
+    U g -> case g (fmap (\x -> ((), x)) bs) of
+      Nothing -> Nothing
+      Just (W p1' p2' ar) ->
+        Just (O.valuesSafeExplicit p1' p2' (NEL.toList (fmap snd ar)))
 
 baz :: O.IsSqlType a
     => [[O.Field a]] -> Maybe (O.Select [O.Field a])
