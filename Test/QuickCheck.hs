@@ -751,7 +751,64 @@ minimumBy = maximumBy . flip
 -- }
 
 data W a p p' c where
-  W :: p r [c] -> p' r [c] -> NEL.NonEmpty (a, r) -> W a p p' c
+  W :: p r c -> p' r c -> NEL.NonEmpty (a, r) -> W a p p' c
+
+instance (P.Profunctor p, P.Profunctor p') => Functor (W a p p') where
+  fmap f (W p p' l) = W (P.rmap f p) (P.rmap f p') l
+
+data U p p' b c where
+  U :: (forall a. NEL.NonEmpty (a, b) -> Maybe (W a p p' c))
+    -> U p p' b c
+
+pureU :: p b c -> p' b c -> U p p' b c
+pureU p p' = U (\l -> Just (W p p' l))
+
+instance (P.Profunctor p, P.Profunctor p') => P.Profunctor (U p p') where
+  dimap f g (U h) = U (\l -> (fmap . fmap) g (h ((fmap . fmap) f l)))
+
+instance (PP.ProductProfunctor p, PP.ProductProfunctor p')
+  => PP.ProductProfunctor (U p p') where
+  purePP a = U (\l -> pure (W (PP.purePP a) (PP.purePP a) l))
+
+  U f **** U g = U (\l -> do
+    let l' = fmap (\(a, b) -> ((a, b), b)) l
+    wf <- f l'
+    case wf of
+      W pf pf' fl -> do
+        let l'' = fmap (\((a, b), r) -> ((a, r), b)) fl
+        wg <- g l''
+        case wg of
+          W pg pg' gl ->
+            pure $
+            W (P.lmap fst pf  PP.**** P.lmap snd pg)
+              (P.lmap fst pf' PP.**** P.lmap snd pg')
+              (fmap (\((a, r), r') -> (a, (r, r'))) gl))
+
+instance (P.Profunctor p, P.Profunctor p') => PP.SumProfunctor (U p p') where
+  U f +++! U g = U (\l -> do
+    let eithers :: NEL.NonEmpty (a, Either b b')
+                -> Maybe (Either (NEL.NonEmpty (a, b))
+                                 (NEL.NonEmpty (a, b')))
+        eithers ll = case uncons ll of
+          Left (a, ebb) -> case ebb of
+            Left b   -> Just (Left  (pure (a, b)))
+            Right b' -> Just (Right (pure (a, b')))
+          Right ((a, ebb), a_ebbs) -> case eithers a_ebbs of
+            Nothing  -> Nothing
+            Just eab_ab -> case (ebb, eab_ab) of
+              (Left b,   Left abs_)  -> Just (Left  ((a, b)  NEL.<| abs_))
+              (Right b', Right ab's) -> Just (Right ((a, b') NEL.<| ab's))
+              _ -> Nothing
+
+    e_abs_ab's <- eithers l
+
+    case e_abs_ab's of
+      Left abs_  -> (fmap . fmap) Left  (f abs_)
+      Right ab's -> (fmap . fmap) Right (g ab's)
+    )
+
+
+
 
 baz :: O.IsSqlType a
     => [[O.Field a]] -> Maybe (O.Select [O.Field a])
@@ -774,14 +831,14 @@ foo :: (PP.ProductProfunctor p, PP.ProductProfunctor p')
     => p b c
     -> p' b c
     -> NEL.NonEmpty (a, [b])
-    -> Maybe (W a p p' c)
+    -> Maybe (W a p p' [c])
 foo = wrap where
 
   wrap :: (PP.ProductProfunctor p, PP.ProductProfunctor p')
        => p b c
        -> p' b c
        -> NEL.NonEmpty (a, [b])
-       -> Maybe (W a p p' c)
+       -> Maybe (W a p p' [c])
   wrap p p1 l = do
     u <- unconses l
 
@@ -809,7 +866,7 @@ foo = wrap where
         (b:bs', Right abbs) -> Just (Right (((a, b), bs') NEL.<| abbs))
         _ -> Nothing
 
-  uncons :: NEL.NonEmpty a -> Either a (a, NEL.NonEmpty a)
-  uncons (a NEL.:| as) = case as of
-    []     -> Left a
-    a':as' -> Right (a, a' NEL.:| as')
+uncons :: NEL.NonEmpty a -> Either a (a, NEL.NonEmpty a)
+uncons (a NEL.:| as) = case as of
+  []     -> Left a
+  a':as' -> Right (a, a' NEL.:| as')
