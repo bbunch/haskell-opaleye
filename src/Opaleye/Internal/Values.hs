@@ -9,6 +9,7 @@ import qualified Opaleye.Internal.PrimQuery as PQ
 import qualified Opaleye.Internal.PackMap as PM
 import qualified Opaleye.Internal.HaskellDB.PrimQuery as HPQ
 import qualified Opaleye.Internal.PGTypes
+import qualified Opaleye.SqlTypes
 
 import           Data.Profunctor (Profunctor, dimap, rmap)
 import           Data.Profunctor.Product (ProductProfunctor)
@@ -64,8 +65,6 @@ runValuesspec (Valuesspec v) f = PM.traversePM v f ()
 instance Default Valuesspec (Column a) (Column a) where
   def = Valuesspec (PM.iso id Column)
 
--- FIXME: We don't currently handle the case of zero columns.  Need to
--- emit a dummy column and data.
 valuesUSafe :: U.Unpackspec columns columns'
             -> ValuesspecSafe columns columns'
             -> [columns]
@@ -75,8 +74,8 @@ valuesUSafe unpack valuesspec rows ((), t) = (newColumns, primQ', T.next t)
            where (_, valuesRow) =
                    PM.run (U.runUnpackspec unpack extractValuesEntry row)
 
-        (newColumns, valuesPEs_nulls) =
-          PM.run (runValuesspecSafe valuesspec (extractValuesField t))
+        (runVs, anyFields) = runValuesspecSafe valuesspec (extractValuesField t)
+        (newColumns, valuesPEs_nulls) = PM.run runVs
 
         valuesPEs = map fst valuesPEs_nulls
         nulls = map snd valuesPEs_nulls
@@ -84,26 +83,37 @@ valuesUSafe unpack valuesspec rows ((), t) = (newColumns, primQ', T.next t)
         yieldNoRows :: PQ.PrimQuery -> PQ.PrimQuery
         yieldNoRows = PQ.restrict (HPQ.ConstExpr (HPQ.BoolLit False))
 
+        zero = HPQ.ConstExpr (HPQ.IntegerLit 0)
 
-        (values, wrap) = if null rows
-                         then ([nulls], yieldNoRows)
-                         else (map runRow rows, id)
+        nullInt = HPQ.CastExpr (Opaleye.Internal.PGTypes.showSqlType
+                                  (Nothing :: Maybe Opaleye.SqlTypes.SqlInt4))
+                               (HPQ.ConstExpr HPQ.NullLit)
+
+        (values, wrap) = case (null rows, not anyFields) of
+          (True, True)   -> ([[nullInt]], yieldNoRows)
+          (True, False)  -> ([nulls], yieldNoRows)
+          (False, True)  -> (map (const [zero]) rows, id)
+          (False, False) -> (map runRow rows, id)
 
         primQ' = wrap (PQ.Values valuesPEs values)
 
-newtype ValuesspecSafe columns columns' =
-  ValuesspecSafe (PM.PackMap HPQ.PrimExpr HPQ.PrimExpr () columns')
+data ValuesspecSafe columns columns' =
+  ValuesspecSafe {
+    vsMapper    :: PM.PackMap HPQ.PrimExpr HPQ.PrimExpr () columns'
+  , vsAnyFields :: Bool
+  }
 
 runValuesspecSafe :: Applicative f
                   => ValuesspecSafe columns columns'
                   -> (HPQ.PrimExpr -> f HPQ.PrimExpr)
-                  -> f columns'
-runValuesspecSafe (ValuesspecSafe v) f = PM.traversePM v f ()
+                  -> (f columns', Bool)
+runValuesspecSafe (ValuesspecSafe v a) f = (PM.traversePM v f (), a)
 
 instance Opaleye.Internal.PGTypes.IsSqlType a
   => Default ValuesspecSafe (Column a) (Column a) where
   def = def_
     where def_ = ValuesspecSafe(PM.PackMap (\f () -> fmap Column (f null_)))
+                               True
 
           null_ = HPQ.CastExpr (Opaleye.Internal.PGTypes.showSqlType sqlType)
                                (HPQ.ConstExpr HPQ.NullLit)
@@ -132,14 +142,15 @@ instance ProductProfunctor Valuesspec where
   (****) = (<*>)
 
 instance Functor (ValuesspecSafe a) where
-  fmap f (ValuesspecSafe g) = ValuesspecSafe (fmap f g)
+  fmap f (ValuesspecSafe g a) = ValuesspecSafe (fmap f g) a
 
 instance Applicative (ValuesspecSafe a) where
-  pure = ValuesspecSafe . pure
-  ValuesspecSafe f <*> ValuesspecSafe x = ValuesspecSafe (f <*> x)
+  pure a = ValuesspecSafe (pure a) False
+  ValuesspecSafe f af <*> ValuesspecSafe x ax =
+    ValuesspecSafe (f <*> x) (af || ax)
 
 instance Profunctor ValuesspecSafe where
-  dimap _ g (ValuesspecSafe q) = ValuesspecSafe (rmap g q)
+  dimap _ g (ValuesspecSafe q a) = ValuesspecSafe (rmap g q) a
 
 instance ProductProfunctor ValuesspecSafe where
   purePP = pure
