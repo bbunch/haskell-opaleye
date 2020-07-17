@@ -13,6 +13,7 @@ module QuickCheck where
 import           Prelude hiding (compare)
 import qualified Opaleye as O
 import qualified Opaleye.Internal.Lateral as OL
+import qualified Opaleye.Internal.Values as OV
 import qualified Opaleye.Join as OJ
 import qualified Opaleye.ToFields as O
 import           Wrapped (constructor, asSumProfunctor,
@@ -21,6 +22,7 @@ import qualified Database.PostgreSQL.Simple as PGS
 import qualified Test.QuickCheck as TQ
 import           Test.QuickCheck ((===))
 import           Control.Applicative (Applicative, pure, (<$>), (<*>), liftA2)
+import           Control.Monad ((<=<))
 import qualified Data.Profunctor.Product.Default as D
 import           Data.List (sort)
 import qualified Data.List as List
@@ -46,12 +48,12 @@ table1 :: O.Table (O.Field O.SqlInt4, O.Field O.SqlInt4)
 table1 = twoIntTable "table1"
 
 newtype SelectArrDenotation a b =
-  SelectArrDenotation { unSelectArrDenotation :: PGS.Connection -> a -> IO [b] }
+  SelectArrDenotation { unSelectArrDenotation :: PGS.Connection -> [a] -> IO [b] }
 
 type SelectDenotation = SelectArrDenotation ()
 
 unSelectDenotation :: SelectDenotation b -> PGS.Connection -> IO [b]
-unSelectDenotation sa conn = unSelectArrDenotation sa conn ()
+unSelectDenotation sa conn = unSelectArrDenotation sa conn [()]
 
 onList :: ([a] -> [b]) -> SelectDenotation a -> SelectDenotation b
 onList f = SelectArrDenotation . (fmap . fmap . fmap) f . unSelectArrDenotation
@@ -152,6 +154,10 @@ optionalRestrictDenotation = optionalDenotation . restrictFirstBoolList
 instance Show ArbitrarySelect where
   show (ArbitrarySelect q) = maybe "Empty query" id
                               (O.showSqlExplicit unpackFields q)
+
+instance Show ArbitrarySelectArr where
+  -- We could plug in dummy data here, or maybe just an empty list
+  show _ = "ArbitrarySelectArr"
 
 instance Show ArbitrarySelectMaybeFields where
   show (ArbitrarySelectMaybeFields q) =
@@ -404,14 +410,44 @@ instance Applicative (SelectArrDenotation a) where
                                    (unSelectArrDenotation f)
                                    (unSelectArrDenotation x))
 
+composeSelectArrDenotation :: SelectArrDenotation b c
+                           -> SelectArrDenotation a b
+                           -> SelectArrDenotation a c
+composeSelectArrDenotation (SelectArrDenotation f) (SelectArrDenotation g) =
+  SelectArrDenotation (\conn -> f conn <=< g conn)
+
+concatMapM :: Monad m => (a -> m [b]) -> [a] -> m [b]
+concatMapM f = fmap concat . mapM f
+
 denotationExplicit :: O.FromFields fields a
                    -> O.Select fields
                    -> SelectDenotation a
 denotationExplicit qr q =
-  SelectArrDenotation (\conn () -> O.runSelectExplicit qr conn q)
+  SelectArrDenotation (\conn rs ->
+    flip concatMapM rs (\() -> O.runSelectExplicit qr conn q))
 
 denotation :: O.Select Fields -> SelectDenotation Haskells
 denotation = denotationExplicit defChoicesPP
+
+denotationArrExplicit :: O.FromFields [field] [haskell]
+                      -> OV.ValuesspecSafe field field
+                      -> O.Unpackspec field field
+                      -> ([haskell] -> [field])
+                      -> O.SelectArr [field] [field]
+                      -> SelectArrDenotation [haskell] [haskell]
+denotationArrExplicit ff v u tf q =
+  SelectArrDenotation (\conn hs ->
+                         case bar O.valuesSafeExplicit u v (map tf hs) of
+                           Nothing -> error "Jagged"
+                           Just fs -> O.runSelectExplicit ff conn (q <<< fs))
+
+denotationArr :: O.SelectArr Fields Fields
+              -> SelectArrDenotation Haskells Haskells
+denotationArr q =
+  SelectArrDenotation (\conn hs ->
+    case quux (map fieldsOfHaskells hs) of
+      Nothing -> error "Jagged"
+      Just fs -> O.runSelectExplicit defChoicesPP conn (q <<< fs))
 
 denotation2 :: O.Select (Fields, Fields)
             -> SelectDenotation (Haskells, Haskells)
@@ -473,6 +509,15 @@ fields :: PGS.Connection -> ArbitraryFields -> IO TQ.Property
 fields conn (ArbitraryFields c) =
   compareNoSort conn (denotation (pure (fieldsOfHaskells c)))
                      (pure c)
+
+compose :: PGS.Connection
+        -> ArbitrarySelectArr
+        -> ArbitrarySelect
+        -> IO Bool
+compose conn (ArbitrarySelectArr a) (ArbitrarySelect q) = do
+  compare conn (denotation (a <<< q))
+               (denotationArr a `composeSelectArrDenotation` denotation q)
+
 
 fmap' :: PGS.Connection -> ArbitraryFunction -> ArbitrarySelect -> IO TQ.Property
 fmap' conn f (ArbitrarySelect q) =
@@ -581,13 +626,8 @@ optionalRestrict conn (ArbitrarySelect q) =
   where q1 = P.lmap (\() -> fst . firstBoolOrTrue (O.sqlBool True))
                     (O.optionalRestrictExplicit defChoicesPP q)
 
--- This isn't a very thorough test, but traverseMaybeFields returns a
--- SelectArr so testing it has the same problem as testing <<<.  We
--- need to test a denotation that is a *function*, rather than just a
--- list.  We haven't implemented that yet.  It would require running a
--- base query and doing one trip to the database for each row in the
--- base query, applying the SelectArr, and then concatenating the
--- returned lists.
+-- This isn't a very thorough test. traverseMaybeFields returns a
+-- SelectArr so we should test it in the same was as <<<.
 traverseMaybeFields :: PGS.Connection
                     -> ArbitrarySelectMaybeFields
                     -> IO Bool
@@ -606,7 +646,6 @@ traverseMaybeFields conn (ArbitrarySelectMaybeFields q) =
 
   * Nullability
   * Operators (mathematical, logical, etc.)
-  * Denotation of <<<
 
 -}
 
@@ -616,23 +655,6 @@ traverseMaybeFields conn (ArbitrarySelectMaybeFields q) =
 
 run :: PGS.Connection -> IO ()
 run conn = do
-  let l = map fieldsOfHaskells
-           [ [ CInt 1,  CBool True,  CString "Helol" ]
-           , [ CInt 4,  CBool True,  CString "There" ]
-           , [ CInt 7,  CBool False, CString "Wrold" ]
-           , [ CInt 10, CBool True,  CString "blah"  ]
-           ] :: [Fields]
-
-  flip mapM_ (quux l) $ \s -> do
-    r <- O.runSelectExplicit defChoicesPP conn s
-
-    let _ = r :: [Haskells]
-
-    print r
-
-  error "Done"
-
-
   let prop1 p = fmap          TQ.ioProperty (p conn)
       prop2 p = (fmap . fmap) TQ.ioProperty (p conn)
       prop3 p = (fmap . fmap . fmap) TQ.ioProperty (p conn)
@@ -655,6 +677,7 @@ run conn = do
       t p = errorIfNotSuccess
         =<< TQ.quickCheckWithResult (TQ.stdArgs { TQ.maxSuccess = 1000 }) p
 
+  test2 compose
   test1 fields
   test2 fmap'
   test2 apply
@@ -689,7 +712,12 @@ choicePP p1 p2 p3 = asSumProfunctor $ proc choice -> case choice of
 defChoicesPP :: (D.Default p a a', D.Default p b b', D.Default p s s',
                  PP.SumProfunctor p, PP.ProductProfunctor p)
              => p [Choice a b s] [Choice a' b' s']
-defChoicesPP = PP.list (choicePP D.def D.def D.def)
+defChoicesPP = PP.list defChoicePP
+
+defChoicePP :: (D.Default p a a', D.Default p b b', D.Default p s s',
+                PP.SumProfunctor p, PP.ProductProfunctor p)
+            => p (Choice a b s) (Choice a' b' s')
+defChoicePP = choicePP D.def D.def D.def
 
 -- Replace this with `isSuccess` when the following issue is fixed
 --
